@@ -2,8 +2,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from app.routes import flight
-from backend.app.routes import hotel
+from app.routes import flight, hotel
 
 load_dotenv()
 
