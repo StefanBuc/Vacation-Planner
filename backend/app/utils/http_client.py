@@ -160,3 +160,53 @@ def parse_open_meteo_weather(data: dict, date: datetime.date) -> dict:
         "min_temp_c": daily.get("temperature_2m_min", [None])[0],
         "precipitation_mm": daily.get("precipitation_sum", [None])[0],
     }
+    
+
+def get_longitude_and_latitude(destination: str) -> tuple:
+    url = "https://api.geoapify.com/v1/geocode/search"
+    
+    params = {
+        "text": destination,
+        "apiKey": os.getenv("GEOAPIFY_KEY")
+    }
+    
+    longitude, latitude = None, None
+    data = requests.get(url, params=params).json()
+    
+    longitude = data["features"][0]["properties"]["lon"]
+    latitude = data["features"][0]["properties"]["lat"]
+    
+    return longitude, latitude
+
+def get_activities(destination: str, category: list) -> list:
+    longitude, latitude = get_longitude_and_latitude(destination)
+    
+    url = "https://api.geoapify.com/v2/places"
+    
+    params = {
+        "categories": ",".join(category),
+        "filter": f"circle:{longitude},{latitude},5000",
+        "limit": 20,
+        "apiKey": os.getenv("GEOAPIFY_KEY")
+    }
+    
+    data = requests.get(url, params=params).json()
+    
+    return parse_activity_options(data.get("features", []))
+
+def parse_activity_options(features: list) -> list:
+    activities = []
+    
+    for feature in features:
+        properties = feature.get("properties", {})
+        activities.append({
+            "name": properties.get("name"),
+            "description": properties.get("description"),
+            "longitude": properties.get("lon"),
+            "latitude": properties.get("lat"),
+            "price": 0,
+            "duration_minutes": 60,
+            "type": properties.get("categories", [None])[0]
+        })
+    
+    return activities
