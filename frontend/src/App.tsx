@@ -30,16 +30,66 @@ type WeatherResult = {
   precipitation_mm: number | null
 }
 
+type ActivityOption = {
+  name: string | null
+  description: string | null
+  longitude: number | null
+  latitude: number | null
+  price: number
+  duration_minutes: number
+  type: string | null
+}
+
+type ActivityFilter = {
+  id: 'sightseeing' | 'museums' | 'hikes' | 'parks' | 'food'
+  label: string
+  description: string
+  categories: string[]
+}
+
 type SearchResults = {
+  activities: ActivityOption[]
   flights: FlightOption[]
   hotels: HotelOption[]
   weather: WeatherResult | null
 }
 
-type SearchErrors = Partial<Record<'flights' | 'hotels' | 'weather', string>>
+type SearchErrors = Partial<Record<'activities' | 'flights' | 'hotels' | 'weather', string>>
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '')
 const AIRPORT_CODE_PATTERN = /^[A-Za-z]{3}$/
+const ACTIVITY_FILTERS: ActivityFilter[] = [
+  {
+    id: 'sightseeing',
+    label: 'Sightseeing',
+    description: 'Landmarks and popular sights',
+    categories: ['tourism.sights'],
+  },
+  {
+    id: 'museums',
+    label: 'Museums',
+    description: 'Museums and exhibits',
+    categories: ['entertainment.museum'],
+  },
+  {
+    id: 'hikes',
+    label: 'Hikes',
+    description: 'Nature spots and trails',
+    categories: ['natural'],
+  },
+  {
+    id: 'parks',
+    label: 'Parks',
+    description: 'Urban parks and green space',
+    categories: ['leisure.park'],
+  },
+  {
+    id: 'food',
+    label: 'Food',
+    description: 'Restaurants and cafe areas',
+    categories: ['catering.restaurant'],
+  },
+]
 
 function formatDateInput(date: Date) {
   return date.toISOString().slice(0, 10)
@@ -98,11 +148,30 @@ async function fetchJson<T>(path: string) {
   return data as T
 }
 
+function buildActivitiesPath(destination: string, selectedFilters: ActivityFilter['id'][]) {
+  const params = new URLSearchParams()
+
+  for (const filterId of selectedFilters) {
+    const filter = ACTIVITY_FILTERS.find((option) => option.id === filterId)
+    if (!filter) {
+      continue
+    }
+
+    for (const category of filter.categories) {
+      params.append('categories', category)
+    }
+  }
+
+  const query = params.toString()
+  return `/activities/${destination}${query ? `?${query}` : ''}`
+}
+
 function App() {
   const today = new Date()
   const [form, setForm] = useState({
     destinationCity: '',
     flightDestination: '',
+    activityFilters: ['sightseeing', 'museums'] as ActivityFilter['id'][],
     origin: 'YYZ',
     startDate: formatDateInput(addDays(today, 7)),
     endDate: formatDateInput(addDays(today, 12)),
@@ -112,6 +181,15 @@ function App() {
   const [sectionErrors, setSectionErrors] = useState<SearchErrors>({})
   const [formError, setFormError] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+
+  function toggleActivityFilter(filterId: ActivityFilter['id']) {
+    setForm((current) => ({
+      ...current,
+      activityFilters: current.activityFilters.includes(filterId)
+        ? current.activityFilters.filter((value) => value !== filterId)
+        : [...current.activityFilters, filterId],
+    }))
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -136,6 +214,7 @@ function App() {
     const origin = encodeURIComponent(form.origin.trim().toUpperCase())
     const flightDestination = encodeURIComponent(form.flightDestination.trim().toUpperCase())
     const currency = encodeURIComponent(form.currency)
+    const activityPath = buildActivitiesPath(destination, form.activityFilters)
     const flightInputError =
       !form.origin.trim() || !form.flightDestination.trim()
         ? 'Enter both origin and flight destination codes like YYZ and CDG.'
@@ -143,7 +222,10 @@ function App() {
           ? 'Flights use 3-letter airport codes like YYZ, CDG, or ORY.'
           : undefined
 
-    const [flightResult, hotelResult, weatherResult] = await Promise.allSettled([
+    const [activityResult, flightResult, hotelResult, weatherResult] = await Promise.allSettled([
+      form.activityFilters.length
+        ? fetchJson<ActivityOption[]>(activityPath)
+        : Promise.resolve<ActivityOption[]>([]),
       flightInputError
         ? Promise.resolve<FlightOption[]>([])
         : fetchJson<FlightOption[]>(
@@ -156,12 +238,15 @@ function App() {
     ])
 
     const nextResults: SearchResults = {
+      activities: activityResult.status === 'fulfilled' ? activityResult.value : [],
       flights: flightResult.status === 'fulfilled' ? flightResult.value : [],
       hotels: hotelResult.status === 'fulfilled' ? hotelResult.value : [],
       weather: weatherResult.status === 'fulfilled' ? weatherResult.value : null,
     }
 
     const nextErrors: SearchErrors = {
+      activities:
+        activityResult.status === 'rejected' ? getErrorMessage(activityResult.reason) : undefined,
       flights:
         flightInputError ??
         (flightResult.status === 'rejected' ? getErrorMessage(flightResult.reason) : undefined),
@@ -253,6 +338,38 @@ function App() {
                 flights. Example: destination city <span className="font-semibold text-white">Paris</span> with
                 flight code <span className="font-semibold text-white">CDG</span> or <span className="font-semibold text-white">ORY</span>. Exact airports are more reliable than metro codes like <span className="font-semibold text-white">PAR</span>.
               </p>
+
+              <div className="grid gap-3">
+                <div className="flex items-center justify-between gap-3">
+                  <label className="text-sm text-slate-200">Activity types</label>
+                  <span className="text-xs text-slate-400">
+                    {form.activityFilters.length} selected
+                  </span>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {ACTIVITY_FILTERS.map((filter) => {
+                    const isSelected = form.activityFilters.includes(filter.id)
+
+                    return (
+                      <button
+                        key={filter.id}
+                        type="button"
+                        onClick={() => toggleActivityFilter(filter.id)}
+                        className={`rounded-2xl border px-4 py-3 text-left transition ${
+                          isSelected
+                            ? 'border-sky-400/50 bg-sky-400/15 text-white'
+                            : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
+                        }`}
+                      >
+                        <p className="text-sm font-semibold">{filter.label}</p>
+                        <p className="mt-1 text-xs leading-5 text-slate-400">
+                          {filter.description}
+                        </p>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <label className="grid gap-2 text-sm text-slate-200">
@@ -411,6 +528,68 @@ function App() {
                     {results
                       ? 'No flights returned for this search.'
                       : 'Search a trip to load flight options here.'}
+                  </p>
+                )}
+              </div>
+            </article>
+
+            <article className="rounded-3xl border border-white/10 bg-slate-950/55 p-6 shadow-xl shadow-slate-950/30 backdrop-blur">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-semibold text-white">Activities</h2>
+                  <p className="text-sm text-slate-400">FastAPI response from `/activities`.</p>
+                </div>
+                {results ? (
+                  <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-300">
+                    {results.activities.length} found
+                  </span>
+                ) : null}
+              </div>
+
+              {sectionErrors.activities ? (
+                <p className="mb-4 rounded-2xl border border-rose-400/30 bg-rose-400/10 px-4 py-3 text-sm text-rose-200">
+                  {sectionErrors.activities}
+                </p>
+              ) : null}
+
+              <div className="grid gap-3 md:grid-cols-2">
+                {results?.activities.length ? (
+                  results.activities.map((activity, index) => (
+                    <div
+                      key={`${activity.name ?? 'activity'}-${activity.type ?? 'unknown'}-${index}`}
+                      className="rounded-2xl border border-white/10 bg-white/5 p-4"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-lg font-semibold text-white">
+                            {activity.name ?? 'Unnamed activity'}
+                          </p>
+                          <p className="text-sm text-sky-200">
+                            {activity.type ?? 'Activity'}
+                          </p>
+                        </div>
+                        <p className="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-xs text-slate-300">
+                          {activity.duration_minutes} min
+                        </p>
+                      </div>
+                      <div className="mt-4 space-y-2 text-sm text-slate-300">
+                        <p>{activity.description ?? 'No description available.'}</p>
+                        <p>
+                          Coordinates:{' '}
+                          {activity.latitude !== null && activity.longitude !== null
+                            ? `${activity.latitude.toFixed(3)}, ${activity.longitude.toFixed(3)}`
+                            : 'N/A'}
+                        </p>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="rounded-2xl border border-dashed border-white/10 bg-white/3 px-4 py-8 text-sm text-slate-400 md:col-span-2">
+                    {results
+                      ? form.activityFilters.length
+                        ? 'No activities returned for the selected filters.'
+                        : 'Pick one or more activity filters to load activities.'
+                      : 'Search a trip to load activities here.'}
                   </p>
                 )}
               </div>
