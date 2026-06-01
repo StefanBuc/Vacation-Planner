@@ -178,13 +178,13 @@ def get_longitude_and_latitude(destination: str) -> tuple:
     
     return longitude, latitude
 
-def get_activities(destination: str, category: list) -> list:
+def get_activities(destination: str, categories: list) -> list:
     longitude, latitude = get_longitude_and_latitude(destination)
     
     url = "https://api.geoapify.com/v2/places"
     
     params = {
-        "categories": ",".join(category),
+        "categories": ",".join(categories),
         "filter": f"circle:{longitude},{latitude},5000",
         "limit": 20,
         "apiKey": os.getenv("GEOAPIFY_KEY")
@@ -194,12 +194,12 @@ def get_activities(destination: str, category: list) -> list:
     
     return parse_activity_options(data.get("features", []))
 
-def parse_activity_options(features: list) -> list:
-    activities = []
+def parse_activity_options(activities: list) -> list:
+    parsed_activities = []
     
-    for feature in features:
-        properties = feature.get("properties", {})
-        activities.append({
+    for activity in activities:
+        properties = activity.get("properties", {})
+        parsed_activities.append({
             "name": properties.get("name"),
             "description": properties.get("description"),
             "longitude": properties.get("lon"),
@@ -209,4 +209,4 @@ def parse_activity_options(features: list) -> list:
             "type": properties.get("categories", [None])[0]
         })
     
-    return activities
+    return parsed_activities
