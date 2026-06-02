@@ -54,6 +54,11 @@ type SearchResults = {
   weather: WeatherResult | null
 }
 
+type TripPlanResponse = {
+  trip_data: SearchResults
+  ai_plan: string
+}
+
 type SearchErrors = Partial<Record<'activities' | 'flights' | 'hotels' | 'weather', string>>
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '')
@@ -133,8 +138,14 @@ function isAirportCode(value: string) {
   return AIRPORT_CODE_PATTERN.test(value.trim())
 }
 
-async function fetchJson<T>(path: string) {
-  const response = await fetch(`${API_BASE_URL}${path}`)
+async function postJson<T>(path: string, body: unknown) {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  })
   const data = await response.json().catch(() => null)
 
   if (!response.ok) {
@@ -148,8 +159,8 @@ async function fetchJson<T>(path: string) {
   return data as T
 }
 
-function buildActivitiesPath(destination: string, selectedFilters: ActivityFilter['id'][]) {
-  const params = new URLSearchParams()
+function buildActivityCategories(selectedFilters: ActivityFilter['id'][]) {
+  const categories = new Set<string>()
 
   for (const filterId of selectedFilters) {
     const filter = ACTIVITY_FILTERS.find((option) => option.id === filterId)
@@ -158,12 +169,11 @@ function buildActivitiesPath(destination: string, selectedFilters: ActivityFilte
     }
 
     for (const category of filter.categories) {
-      params.append('categories', category)
+      categories.add(category)
     }
   }
 
-  const query = params.toString()
-  return `/activities/${destination}${query ? `?${query}` : ''}`
+  return [...categories]
 }
 
 function App() {
@@ -178,6 +188,7 @@ function App() {
     currency: 'USD',
   })
   const [results, setResults] = useState<SearchResults | null>(null)
+  const [aiPlan, setAiPlan] = useState('')
   const [sectionErrors, setSectionErrors] = useState<SearchErrors>({})
   const [formError, setFormError] = useState('')
   const [isLoading, setIsLoading] = useState(false)
@@ -210,11 +221,17 @@ function App() {
     setIsLoading(true)
     setSectionErrors({})
 
-    const destination = encodeURIComponent(destinationCity)
-    const origin = encodeURIComponent(form.origin.trim().toUpperCase())
-    const flightDestination = encodeURIComponent(form.flightDestination.trim().toUpperCase())
-    const currency = encodeURIComponent(form.currency)
-    const activityPath = buildActivitiesPath(destination, form.activityFilters)
+    const requestBody = {
+      origin_airport: form.origin.trim().toUpperCase(),
+      destination_airport: form.flightDestination.trim().toUpperCase(),
+      destination_city: destinationCity,
+      outbound_date: form.startDate,
+      return_date: form.endDate,
+      currency: form.currency.trim().toUpperCase(),
+      include_activities: form.activityFilters.length > 0,
+      include_weather: true,
+      activity_categories: buildActivityCategories(form.activityFilters),
+    }
     const flightInputError =
       !form.origin.trim() || !form.flightDestination.trim()
         ? 'Enter both origin and flight destination codes like YYZ and CDG.'
@@ -222,41 +239,44 @@ function App() {
           ? 'Flights use 3-letter airport codes like YYZ, CDG, or ORY.'
           : undefined
 
-    const [activityResult, flightResult, hotelResult, weatherResult] = await Promise.allSettled([
-      form.activityFilters.length
-        ? fetchJson<ActivityOption[]>(activityPath)
-        : Promise.resolve<ActivityOption[]>([]),
-      flightInputError
-        ? Promise.resolve<FlightOption[]>([])
-        : fetchJson<FlightOption[]>(
-            `/flights/${origin}/${flightDestination}/${currency}/${form.startDate}/${form.endDate}`,
-          ),
-      fetchJson<HotelOption[]>(
-        `/hotels/${destination}/${form.startDate}/${form.endDate}/${currency}`,
-      ),
-      fetchJson<WeatherResult>(`/weather/${destination}/${form.startDate}`),
-    ])
-
-    const nextResults: SearchResults = {
-      activities: activityResult.status === 'fulfilled' ? activityResult.value : [],
-      flights: flightResult.status === 'fulfilled' ? flightResult.value : [],
-      hotels: hotelResult.status === 'fulfilled' ? hotelResult.value : [],
-      weather: weatherResult.status === 'fulfilled' ? weatherResult.value : null,
+    if (flightInputError) {
+      setAiPlan('')
+      setResults((current) =>
+        current ?? {
+          activities: [],
+          flights: [],
+          hotels: [],
+          weather: null,
+        },
+      )
+      setSectionErrors({ flights: flightInputError })
+      setIsLoading(false)
+      return
     }
 
-    const nextErrors: SearchErrors = {
-      activities:
-        activityResult.status === 'rejected' ? getErrorMessage(activityResult.reason) : undefined,
-      flights:
-        flightInputError ??
-        (flightResult.status === 'rejected' ? getErrorMessage(flightResult.reason) : undefined),
-      hotels: hotelResult.status === 'rejected' ? getErrorMessage(hotelResult.reason) : undefined,
-      weather: weatherResult.status === 'rejected' ? getErrorMessage(weatherResult.reason) : undefined,
-    }
+    try {
+      const tripPlan = await postJson<TripPlanResponse>('/plan-trip/', requestBody)
 
-    setResults(nextResults)
-    setSectionErrors(nextErrors)
-    setIsLoading(false)
+      setResults({
+        activities: tripPlan.trip_data?.activities ?? [],
+        flights: tripPlan.trip_data?.flights ?? [],
+        hotels: tripPlan.trip_data?.hotels ?? [],
+        weather: tripPlan.trip_data?.weather ?? null,
+      })
+      setAiPlan(tripPlan.ai_plan ?? '')
+      setSectionErrors({})
+    } catch (error) {
+      setAiPlan('')
+      setResults({
+        activities: [],
+        flights: [],
+        hotels: [],
+        weather: null,
+      })
+      setFormError(getErrorMessage(error))
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   return (
@@ -274,8 +294,8 @@ function App() {
                 </h1>
                 <p className="max-w-2xl text-sm leading-6 text-slate-300 sm:text-base">
                   This page is intentionally simple for testing your FastAPI backend. Enter a
-                  destination city, travel dates, and flight airport codes, then it will query all
-                  three endpoints together.
+                  destination city, travel dates, and flight airport codes, then it will send one
+                  combined trip-planning request to the backend.
                 </p>
               </div>
               <div className="flex flex-wrap gap-3 text-sm text-slate-300">
@@ -284,6 +304,9 @@ function App() {
                 </span>
                 <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1">
                   Currency: {form.currency}
+                </span>
+                <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1">
+                  Route: POST /plan-trip/
                 </span>
               </div>
             </div>
@@ -314,7 +337,7 @@ function App() {
                     onChange={(event) =>
                       setForm((current) => ({ ...current, origin: event.target.value }))
                     }
-                  placeholder="YYZ"
+                    placeholder="YYZ"
                     className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-base uppercase text-white outline-none transition focus:border-sky-400 focus:bg-white/10"
                   />
                 </label>
@@ -479,8 +502,29 @@ function App() {
             <article className="rounded-3xl border border-white/10 bg-slate-950/55 p-6 shadow-xl shadow-slate-950/30 backdrop-blur">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div>
+                  <h2 className="text-xl font-semibold text-white">AI Plan</h2>
+                  <p className="text-sm text-slate-400">Generated from the `/plan-trip/` response.</p>
+                </div>
+              </div>
+
+              {aiPlan ? (
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <pre className="whitespace-pre-wrap font-sans text-sm leading-6 text-slate-200">
+                    {aiPlan}
+                  </pre>
+                </div>
+              ) : (
+                <p className="rounded-2xl border border-dashed border-white/10 bg-white/3 px-4 py-8 text-sm text-slate-400">
+                  Search a trip to load the generated plan here.
+                </p>
+              )}
+            </article>
+
+            <article className="rounded-3xl border border-white/10 bg-slate-950/55 p-6 shadow-xl shadow-slate-950/30 backdrop-blur">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
                   <h2 className="text-xl font-semibold text-white">Flights</h2>
-                  <p className="text-sm text-slate-400">FastAPI response from `/flights`.</p>
+                  <p className="text-sm text-slate-400">Returned inside the `/plan-trip/` response.</p>
                 </div>
                 {results ? (
                   <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-300">
@@ -537,7 +581,7 @@ function App() {
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div>
                   <h2 className="text-xl font-semibold text-white">Activities</h2>
-                  <p className="text-sm text-slate-400">FastAPI response from `/activities`.</p>
+                  <p className="text-sm text-slate-400">Returned inside the `/plan-trip/` response.</p>
                 </div>
                 {results ? (
                   <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-300">
@@ -599,7 +643,7 @@ function App() {
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div>
                   <h2 className="text-xl font-semibold text-white">Hotels</h2>
-                  <p className="text-sm text-slate-400">FastAPI response from `/hotels`.</p>
+                  <p className="text-sm text-slate-400">Returned inside the `/plan-trip/` response.</p>
                 </div>
                 {results ? (
                   <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-300">

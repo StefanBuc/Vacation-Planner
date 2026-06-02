@@ -2,7 +2,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from app.routes import activity, flight, hotel, weather
+from app.routes import activity, flight, hotel, weather, plan_trip
 
 load_dotenv()
 
@@ -19,6 +19,7 @@ app.include_router(flight.router)
 app.include_router(hotel.router)
 app.include_router(weather.router)
 app.include_router(activity.router)
+app.include_router(plan_trip.router)
 
 app.add_middleware(
     CORSMiddleware,
