@@ -22,21 +22,26 @@ def normalize_airport_code(value: str, field_name: str) -> str:
 
     return normalized
 
-def get_flights(origin:str, destination:str, currency:str, outbound_date:str, return_date:str) -> list:
+def get_flights(origin: str, destination: str, currency: str, outbound_date: str, return_date: str | None = None) -> list:
     origin_code = normalize_airport_code(origin, "Origin airport")
     destination_code = normalize_airport_code(destination, "Flight destination")
 
+    search_params = {
+        "engine": "google_flights",
+        "hl": "en",
+        "gl": "us",
+        "departure_id": origin_code,
+        "arrival_id": destination_code,
+        "currency": currency,
+        "outbound_date": outbound_date,
+        "type": 1 if return_date else 2,
+    }
+
+    if return_date:
+        search_params["return_date"] = return_date
+
     try:
-        results = client.search({
-            "engine": "google_flights",
-            "hl": "en",
-            "gl": "us",
-            "departure_id": origin_code,
-            "arrival_id": destination_code,
-            "currency": currency,
-            "outbound_date": outbound_date,
-            "return_date": return_date,
-        })
+        results = client.search(search_params)
     except requests.HTTPError as error:
         status_code = error.response.status_code if error.response is not None else None
         if status_code == 400:

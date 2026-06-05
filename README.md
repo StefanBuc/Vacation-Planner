@@ -1,72 +1,142 @@
 # Vacation Planner AI
 
-An AI-powered vacation planning web app that helps users discover flights, hotels, and personalized trip recommendations.
+An AI-powered vacation planning app for testing multi-city trip planning with flights, hotels, weather, activities, and generated itinerary notes.
 
-## Features
+![Vacation Planner AI main page](docs/images/mainpage.png)
 
-- Search flights using Google Flights data
-- Search hotels using Google Hotels data
-- AI-generated travel recommendations and itineraries (planned)
-- React + TypeScript frontend
-- FastAPI backend
-- TailwindCSS UI
-- Structured backend architecture using services and schemas
+## Current Features
 
----
+- Multi-city trip planning with any number of city stops
+- Per-city stay length in days
+- Per-city activity preferences, such as sightseeing, museums, hikes, parks, and food
+- Optional airport code per city stop
+- Flight segment lookup when airport codes are available
+- Hotel lookup per city and date window
+- Weather lookup per city
+- Activity lookup per city using Geoapify
+- AI-generated trip plan using Gemini
+- React + TypeScript + TailwindCSS frontend
+- FastAPI backend with services, routes, and Pydantic schemas
 
-# Tech Stack
+## How Multi-City Planning Works
 
-## Frontend
+The frontend sends one request to `POST /plan-trip/`.
+
+Each city stop can include an airport code, but it does not have to. If a city has no airport code, the backend still fetches hotels, weather, and activities for that city. Flight lookup is only attempted for legs where both sides have airport codes.
+
+Example request:
+
+```json
+{
+  "origin_airport": "YYZ",
+  "outbound_date": "2026-06-15",
+  "currency": "CAD",
+  "return_to_origin": true,
+  "include_activities": true,
+  "include_weather": true,
+  "stops": [
+    {
+      "city": "Paris",
+      "airport": "CDG",
+      "days": 3,
+      "activity_categories": ["tourism.sights", "entertainment.museum"]
+    },
+    {
+      "city": "Lyon",
+      "airport": null,
+      "days": 2,
+      "activity_categories": ["tourism.sights", "catering.restaurant"]
+    }
+  ]
+}
+```
+
+Example response shape:
+
+```json
+{
+  "trip_data": {
+    "origin_airport": "YYZ",
+    "start_date": "2026-06-15",
+    "end_date": "2026-06-20",
+    "currency": "CAD",
+    "cities": [],
+    "flights": [],
+    "hotels": [],
+    "activities": [],
+    "weather": null,
+    "weather_by_city": []
+  },
+  "ai_plan": "Generated itinerary text"
+}
+```
+
+## Tech Stack
+
+Frontend:
+
 - React
 - TypeScript
 - Vite
 - TailwindCSS
 
-## Backend
+Backend:
+
 - FastAPI
 - Pydantic
 - Python
 
-## APIs
-- SerpAPI
-  - Google Flights
-  - Google Hotels
+External APIs:
 
----
+- SerpAPI for Google Flights and Google Hotels
+- Open-Meteo for weather
+- Geoapify for geocoding and places
+- Gemini for AI itinerary generation
 
-# Current Progress
+## Environment Variables
 
-- [x] Flight search integration
-- [x] Hotel search integration
-- [x] Flight schema parsing
-- [x] Hotel schema parsing
-- [ ] Frontend UI
-- [ ] AI itinerary generation
-- [ ] Maps integration
-- [ ] User authentication
-- [ ] Saved trips
-- [ ] Budget planning
-- [ ] Activity recommendations
+Create `backend/.env` with:
 
----
+```env
+SERPAPI_KEY=
+GEOAPIFY_KEY=
+GEMINI_KEY=
+```
 
-# Future Goals
+Optional:
 
-- AI-generated full vacation itineraries
-- Budget optimization
-- Multi-destination trip planning
-- Weather integration
-- Car rental integration
-- Interactive maps
-- Personalized recommendations
-- Trip sharing
+```env
+ALLOWED_ORIGINS=*
+```
 
----
+## Running The App
 
-# Notes
+Backend:
 
-This project is currently in active development.
+```powershell
+cd backend
+fastapi dev main.py
+```
 
-Flight and hotel data are powered through SerpAPI integrations with Google Flights and Google Hotels.
+Frontend:
 
----
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+The frontend defaults to `http://127.0.0.1:8000` for the backend. To override it, set `VITE_API_BASE_URL`.
+
+## Future Ideas
+
+- Transportation choices per leg, such as train, car rental, bus, or flight
+- Smarter handling for cities without airport codes
+- Budget and preference controls
+- Maps and route visualization
+- Saved trips and trip sharing
+- User authentication
+
+## Notes
+
+This project is in active development. The frontend is intentionally simple and test-focused so backend changes can be exercised quickly.

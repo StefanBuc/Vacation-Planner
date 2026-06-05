@@ -47,7 +47,32 @@ type ActivityFilter = {
   categories: string[]
 }
 
+type StopForm = {
+  id: string
+  city: string
+  airport: string
+  days: number
+  activityFilters: ActivityFilter['id'][]
+}
+
+type CityResult = {
+  city: string
+  airport: string | null
+  days: number
+  order: number
+  checkin_date: string
+  checkout_date: string
+  hotels: HotelOption[]
+  activities: ActivityOption[]
+  weather: WeatherResult | null
+}
+
 type SearchResults = {
+  origin_airport?: string
+  start_date?: string
+  end_date?: string
+  currency?: string
+  cities: CityResult[]
   activities: ActivityOption[]
   flights: FlightOption[]
   hotels: HotelOption[]
@@ -58,8 +83,6 @@ type TripPlanResponse = {
   trip_data: SearchResults
   ai_plan: string
 }
-
-type SearchErrors = Partial<Record<'activities' | 'flights' | 'hotels' | 'weather', string>>
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '')
 const AIRPORT_CODE_PATTERN = /^[A-Za-z]{3}$/
@@ -104,6 +127,16 @@ function addDays(date: Date, days: number) {
   const nextDate = new Date(date)
   nextDate.setDate(nextDate.getDate() + days)
   return nextDate
+}
+
+function createStop(index: number): StopForm {
+  return {
+    id: `stop-${Date.now()}-${index}`,
+    city: index === 1 ? 'Paris' : '',
+    airport: '',
+    days: index === 1 ? 3 : 2,
+    activityFilters: ['sightseeing', 'museums'],
+  }
 }
 
 function formatFlightDuration(minutes: number) {
@@ -178,101 +211,124 @@ function buildActivityCategories(selectedFilters: ActivityFilter['id'][]) {
 
 function App() {
   const today = new Date()
-  const [form, setForm] = useState({
-    destinationCity: '',
-    flightDestination: '',
-    activityFilters: ['sightseeing', 'museums'] as ActivityFilter['id'][],
+  const [form, setForm] = useState(() => ({
     origin: 'YYZ',
     startDate: formatDateInput(addDays(today, 7)),
-    endDate: formatDateInput(addDays(today, 12)),
-    currency: 'USD',
-  })
+    currency: 'CAD',
+    returnToOrigin: true,
+    stops: [createStop(1)],
+  }))
   const [results, setResults] = useState<SearchResults | null>(null)
   const [aiPlan, setAiPlan] = useState('')
-  const [sectionErrors, setSectionErrors] = useState<SearchErrors>({})
   const [formError, setFormError] = useState('')
   const [isLoading, setIsLoading] = useState(false)
 
-  function toggleActivityFilter(filterId: ActivityFilter['id']) {
+  const totalDays = form.stops.reduce((sum, stop) => sum + Number(stop.days || 0), 0)
+  const resultCities = results?.cities ?? []
+
+  function updateStop(stopId: string, updates: Partial<StopForm>) {
     setForm((current) => ({
       ...current,
-      activityFilters: current.activityFilters.includes(filterId)
-        ? current.activityFilters.filter((value) => value !== filterId)
-        : [...current.activityFilters, filterId],
+      stops: current.stops.map((stop) =>
+        stop.id === stopId ? { ...stop, ...updates } : stop,
+      ),
+    }))
+  }
+
+  function addStop() {
+    setForm((current) => ({
+      ...current,
+      stops: [...current.stops, createStop(current.stops.length + 1)],
+    }))
+  }
+
+  function removeStop(stopId: string) {
+    setForm((current) => ({
+      ...current,
+      stops: current.stops.length === 1
+        ? current.stops
+        : current.stops.filter((stop) => stop.id !== stopId),
+    }))
+  }
+
+  function toggleActivityFilter(stopId: string, filterId: ActivityFilter['id']) {
+    setForm((current) => ({
+      ...current,
+      stops: current.stops.map((stop) => {
+        if (stop.id !== stopId) {
+          return stop
+        }
+
+        const activityFilters = stop.activityFilters.includes(filterId)
+          ? stop.activityFilters.filter((value) => value !== filterId)
+          : [...stop.activityFilters, filterId]
+
+        return { ...stop, activityFilters }
+      }),
     }))
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
-    const destinationCity = form.destinationCity.trim()
-
-    if (!destinationCity) {
-      setFormError('Destination city is required.')
+    if (!isAirportCode(form.origin)) {
+      setFormError('Origin must be a 3-letter airport code like YYZ.')
       return
     }
 
-    if (form.endDate < form.startDate) {
-      setFormError('Return date must be on or after the departure date.')
-      return
+    for (const [index, stop] of form.stops.entries()) {
+      if (!stop.city.trim()) {
+        setFormError(`City ${index + 1} needs a city name.`)
+        return
+      }
+
+      if (stop.airport.trim() && !isAirportCode(stop.airport)) {
+        setFormError(`City ${index + 1} airport must be a 3-letter code like CDG, or left blank.`)
+        return
+      }
+
+      if (!Number.isInteger(Number(stop.days)) || Number(stop.days) < 1) {
+        setFormError(`City ${index + 1} needs at least 1 day.`)
+        return
+      }
     }
 
     setFormError('')
     setIsLoading(true)
-    setSectionErrors({})
 
     const requestBody = {
       origin_airport: form.origin.trim().toUpperCase(),
-      destination_airport: form.flightDestination.trim().toUpperCase(),
-      destination_city: destinationCity,
       outbound_date: form.startDate,
-      return_date: form.endDate,
       currency: form.currency.trim().toUpperCase(),
-      include_activities: form.activityFilters.length > 0,
+      return_to_origin: form.returnToOrigin,
+      include_activities: form.stops.some((stop) => stop.activityFilters.length > 0),
       include_weather: true,
-      activity_categories: buildActivityCategories(form.activityFilters),
-    }
-    const flightInputError =
-      !form.origin.trim() || !form.flightDestination.trim()
-        ? 'Enter both origin and flight destination codes like YYZ and CDG.'
-        : !isAirportCode(form.origin) || !isAirportCode(form.flightDestination)
-          ? 'Flights use 3-letter airport codes like YYZ, CDG, or ORY.'
-          : undefined
-
-    if (flightInputError) {
-      setAiPlan('')
-      setResults((current) =>
-        current ?? {
-          activities: [],
-          flights: [],
-          hotels: [],
-          weather: null,
-        },
-      )
-      setSectionErrors({ flights: flightInputError })
-      setIsLoading(false)
-      return
+      stops: form.stops.map((stop) => ({
+        city: stop.city.trim(),
+        airport: stop.airport.trim() ? stop.airport.trim().toUpperCase() : null,
+        days: Number(stop.days),
+        activity_categories: buildActivityCategories(stop.activityFilters),
+      })),
     }
 
     try {
       const tripPlan = await postJson<TripPlanResponse>('/plan-trip/', requestBody)
 
       setResults({
+        origin_airport: tripPlan.trip_data?.origin_airport,
+        start_date: tripPlan.trip_data?.start_date,
+        end_date: tripPlan.trip_data?.end_date,
+        currency: tripPlan.trip_data?.currency,
+        cities: tripPlan.trip_data?.cities ?? [],
         activities: tripPlan.trip_data?.activities ?? [],
         flights: tripPlan.trip_data?.flights ?? [],
         hotels: tripPlan.trip_data?.hotels ?? [],
         weather: tripPlan.trip_data?.weather ?? null,
       })
       setAiPlan(tripPlan.ai_plan ?? '')
-      setSectionErrors({})
     } catch (error) {
       setAiPlan('')
-      setResults({
-        activities: [],
-        flights: [],
-        hotels: [],
-        weather: null,
-      })
+      setResults(null)
       setFormError(getErrorMessage(error))
     } finally {
       setIsLoading(false)
@@ -280,57 +336,48 @@ function App() {
   }
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(56,189,248,0.2),transparent_32%),linear-gradient(180deg,#020617_0%,#0f172a_52%,#111827_100%)] px-4 py-8 text-slate-100 sm:px-6 lg:px-8">
+    <main className="min-h-screen bg-[linear-gradient(180deg,#17251f_0%,#101815_46%,#0c1210_100%)] px-4 py-8 text-stone-100 sm:px-6 lg:px-8">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
-        <section className="overflow-hidden rounded-3xl border border-white/10 bg-white/8 shadow-2xl shadow-sky-950/20 backdrop-blur">
-          <div className="grid gap-6 p-6 md:grid-cols-[1.1fr_0.9fr] md:p-8">
-            <div className="space-y-4">
-              <span className="inline-flex rounded-full border border-sky-400/30 bg-sky-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-sky-200">
-                Vacation Planner Test UI
-              </span>
-              <div className="space-y-3">
-                <h1 className="max-w-xl text-4xl font-semibold tracking-tight text-white sm:text-5xl">
-                  Quick trip search for flights, hotels, and weather.
+        <section className="border border-white/10 bg-white/6 shadow-xl shadow-black/20 backdrop-blur">
+          <div className="grid min-w-0 gap-6 p-5 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)] lg:p-6">
+            <div className="min-w-0 space-y-5">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-200">
+                  Vacation Planner Test UI
+                </p>
+                <h1 className="mt-3 max-w-xl text-3xl font-semibold text-white sm:text-4xl">
+                  Build a multi-city trip plan.
                 </h1>
-                <p className="max-w-2xl text-sm leading-6 text-slate-300 sm:text-base">
-                  This page is intentionally simple for testing your FastAPI backend. Enter a
-                  destination city, travel dates, and flight airport codes, then it will send one
-                  combined trip-planning request to the backend.
+                <p className="mt-3 max-w-2xl text-sm leading-6 text-stone-300">
+                  Add each city you want to visit, choose what you want to do there, and set how
+                  many days you want to stay. Airport codes are optional for city stops.
                 </p>
               </div>
-              <div className="flex flex-wrap gap-3 text-sm text-slate-300">
-                <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1">
-                  API: {API_BASE_URL}
-                </span>
-                <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1">
-                  Currency: {form.currency}
-                </span>
-                <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1">
-                  Route: POST /plan-trip/
-                </span>
+
+              <div className="grid gap-3 text-sm text-stone-300 sm:grid-cols-2">
+                <div className="border border-white/10 bg-black/20 p-3">
+                  <p className="text-xs uppercase tracking-[0.18em] text-stone-500">API</p>
+                  <p className="mt-1 break-all text-stone-100">{API_BASE_URL}</p>
+                </div>
+                <div className="border border-white/10 bg-black/20 p-3">
+                  <p className="text-xs uppercase tracking-[0.18em] text-stone-500">Trip Length</p>
+                  <p className="mt-1 text-stone-100">{totalDays} planned days</p>
+                </div>
+                <div className="border border-white/10 bg-black/20 p-3">
+                  <p className="text-xs uppercase tracking-[0.18em] text-stone-500">Route</p>
+                  <p className="mt-1 text-stone-100">POST /plan-trip/</p>
+                </div>
+                <div className="border border-white/10 bg-black/20 p-3">
+                  <p className="text-xs uppercase tracking-[0.18em] text-stone-500">Stops</p>
+                  <p className="mt-1 text-stone-100">{form.stops.length} cities</p>
+                </div>
               </div>
             </div>
 
-            <form
-              onSubmit={handleSubmit}
-              className="grid gap-4 rounded-2xl border border-white/10 bg-slate-950/45 p-5"
-            >
-              <label className="grid gap-2 text-sm text-slate-200">
-                Destination city
-                <input
-                  type="text"
-                  value={form.destinationCity}
-                  onChange={(event) =>
-                    setForm((current) => ({ ...current, destinationCity: event.target.value }))
-                  }
-                  placeholder="Paris"
-                  className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-base text-white outline-none transition focus:border-sky-400 focus:bg-white/10"
-                />
-              </label>
-
-              <div className="grid gap-4 sm:grid-cols-2">
-                <label className="grid gap-2 text-sm text-slate-200">
-                  Origin airport code
+            <form onSubmit={handleSubmit} className="grid min-w-0 gap-4 border border-white/10 bg-black/25 p-4">
+              <div className="grid gap-4 sm:grid-cols-3">
+                <label className="grid gap-2 text-sm text-stone-200">
+                  Origin airport
                   <input
                     type="text"
                     value={form.origin}
@@ -338,103 +385,156 @@ function App() {
                       setForm((current) => ({ ...current, origin: event.target.value }))
                     }
                     placeholder="YYZ"
-                    className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-base uppercase text-white outline-none transition focus:border-sky-400 focus:bg-white/10"
+                    className="border border-white/10 bg-white/5 px-3 py-2 text-base uppercase text-white outline-none transition focus:border-emerald-300"
                   />
                 </label>
 
-                <label className="grid gap-2 text-sm text-slate-200">
-                  Flight destination airport code
-                  <input
-                    type="text"
-                    value={form.flightDestination}
-                    onChange={(event) =>
-                      setForm((current) => ({ ...current, flightDestination: event.target.value }))
-                    }
-                    placeholder="CDG"
-                    className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-base uppercase text-white outline-none transition focus:border-sky-400 focus:bg-white/10"
-                  />
-                </label>
-              </div>
-
-              <p className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-xs leading-5 text-slate-300">
-                Use the city name for hotels and weather, and a specific 3-letter airport code for
-                flights. Example: destination city <span className="font-semibold text-white">Paris</span> with
-                flight code <span className="font-semibold text-white">CDG</span> or <span className="font-semibold text-white">ORY</span>. Exact airports are more reliable than metro codes like <span className="font-semibold text-white">PAR</span>.
-              </p>
-
-              <div className="grid gap-3">
-                <div className="flex items-center justify-between gap-3">
-                  <label className="text-sm text-slate-200">Activity types</label>
-                  <span className="text-xs text-slate-400">
-                    {form.activityFilters.length} selected
-                  </span>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {ACTIVITY_FILTERS.map((filter) => {
-                    const isSelected = form.activityFilters.includes(filter.id)
-
-                    return (
-                      <button
-                        key={filter.id}
-                        type="button"
-                        onClick={() => toggleActivityFilter(filter.id)}
-                        className={`rounded-2xl border px-4 py-3 text-left transition ${
-                          isSelected
-                            ? 'border-sky-400/50 bg-sky-400/15 text-white'
-                            : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
-                        }`}
-                      >
-                        <p className="text-sm font-semibold">{filter.label}</p>
-                        <p className="mt-1 text-xs leading-5 text-slate-400">
-                          {filter.description}
-                        </p>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-
-              <div className="grid gap-4 sm:grid-cols-2">
-                <label className="grid gap-2 text-sm text-slate-200">
-                  Departure date
+                <label className="grid gap-2 text-sm text-stone-200">
+                  Start date
                   <input
                     type="date"
                     value={form.startDate}
                     onChange={(event) =>
                       setForm((current) => ({ ...current, startDate: event.target.value }))
                     }
-                    className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-base text-white outline-none transition focus:border-sky-400 focus:bg-white/10"
+                    className="border border-white/10 bg-white/5 px-3 py-2 text-base text-white outline-none transition focus:border-emerald-300"
                   />
                 </label>
 
-                <label className="grid gap-2 text-sm text-slate-200">
-                  Return date
+                <label className="grid gap-2 text-sm text-stone-200">
+                  Currency
                   <input
-                    type="date"
-                    value={form.endDate}
+                    type="text"
+                    value={form.currency}
                     onChange={(event) =>
-                      setForm((current) => ({ ...current, endDate: event.target.value }))
+                      setForm((current) => ({ ...current, currency: event.target.value.toUpperCase() }))
                     }
-                    className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-base text-white outline-none transition focus:border-sky-400 focus:bg-white/10"
+                    placeholder="CAD"
+                    className="border border-white/10 bg-white/5 px-3 py-2 text-base uppercase text-white outline-none transition focus:border-emerald-300"
                   />
                 </label>
               </div>
 
-              <label className="grid gap-2 text-sm text-slate-200">
-                Currency
+              <label className="flex items-center gap-3 border border-white/10 bg-white/5 px-3 py-2 text-sm text-stone-200">
                 <input
-                  type="text"
-                  value={form.currency}
+                  type="checkbox"
+                  checked={form.returnToOrigin}
                   onChange={(event) =>
-                    setForm((current) => ({ ...current, currency: event.target.value.toUpperCase() }))
+                    setForm((current) => ({ ...current, returnToOrigin: event.target.checked }))
                   }
-                  placeholder="USD"
-                  className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-base uppercase text-white outline-none transition focus:border-sky-400 focus:bg-white/10"
+                  className="h-4 w-4 accent-emerald-300"
                 />
+                Return to origin after the final city when the final stop has an airport
               </label>
 
+              <div className="grid gap-4">
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="text-base font-semibold text-white">City Stops</h2>
+                  <button
+                    type="button"
+                    onClick={addStop}
+                    className="border border-emerald-300/50 bg-emerald-300/10 px-3 py-2 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-300/20"
+                  >
+                    Add city
+                  </button>
+                </div>
+
+                {form.stops.map((stop, index) => (
+                  <section key={stop.id} className="grid min-w-0 gap-4 border border-white/10 bg-white/4 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-emerald-100">
+                        City {index + 1}
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={() => removeStop(stop.id)}
+                        disabled={form.stops.length === 1}
+                        className="border border-white/10 px-3 py-1 text-sm text-stone-300 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Remove
+                      </button>
+                    </div>
+
+                    <div className="grid min-w-0 gap-3 md:grid-cols-3">
+                      <label className="grid min-w-0 content-start gap-2 text-sm text-stone-200">
+                        City
+                        <input
+                          type="text"
+                          value={stop.city}
+                          onChange={(event) => updateStop(stop.id, { city: event.target.value })}
+                          placeholder="Paris"
+                          className="h-10 w-full min-w-0 border border-white/10 bg-white/5 px-3 py-2 text-base text-white outline-none transition focus:border-emerald-300"
+                        />
+                      </label>
+
+                      <label className="grid min-w-0 content-start gap-2 text-sm text-stone-200">
+                        <span className="flex items-center gap-2">
+                          Airport optional
+                          <span className="group relative inline-flex">
+                            <span
+                              aria-label="Airport help"
+                              className="inline-flex h-4 w-4 items-center justify-center border border-white/20 bg-white/5 text-[11px] font-semibold text-stone-300"
+                            >
+                              i
+                            </span>
+                            <span className="pointer-events-none absolute left-1/2 top-6 z-10 hidden w-52 -translate-x-1/2 border border-white/10 bg-[#17251f] px-3 py-2 text-xs leading-5 text-stone-200 shadow-xl group-hover:block">
+                              Blank skips flight lookup for this stop.
+                            </span>
+                          </span>
+                        </span>
+                        <input
+                          type="text"
+                          value={stop.airport}
+                          onChange={(event) => updateStop(stop.id, { airport: event.target.value })}
+                          placeholder="CDG"
+                          className="h-10 w-full min-w-0 border border-white/10 bg-white/5 px-3 py-2 text-base uppercase text-white outline-none transition focus:border-emerald-300"
+                        />
+                      </label>
+
+                      <label className="grid min-w-0 content-start gap-2 text-sm text-stone-200">
+                        Days
+                        <input
+                          type="number"
+                          min="1"
+                          value={stop.days}
+                          onChange={(event) => updateStop(stop.id, { days: Number(event.target.value) })}
+                          className="h-10 w-full min-w-0 border border-white/10 bg-white/5 px-3 py-2 text-base text-white outline-none transition focus:border-emerald-300"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="grid gap-2">
+                      <p className="text-sm text-stone-300">Activities for {stop.city || `city ${index + 1}`}</p>
+                      <div className="grid min-w-0 gap-2 sm:grid-cols-2">
+                        {ACTIVITY_FILTERS.map((filter) => {
+                          const isSelected = stop.activityFilters.includes(filter.id)
+
+                          return (
+                            <button
+                              key={filter.id}
+                              type="button"
+                              onClick={() => toggleActivityFilter(stop.id, filter.id)}
+                              className={`min-w-0 border px-3 py-2 text-left transition ${
+                                isSelected
+                                  ? 'border-emerald-300/60 bg-emerald-300/15 text-white'
+                                  : 'border-white/10 bg-white/5 text-stone-300 hover:bg-white/10'
+                              }`}
+                            >
+                              <span className="block min-w-0 wrap-break-word text-sm font-semibold">{filter.label}</span>
+                              <span className="mt-1 block min-w-0 wrap-break-word text-xs leading-5 text-stone-400">
+                                {filter.description}
+                              </span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  </section>
+                ))}
+              </div>
+
               {formError ? (
-                <p className="rounded-xl border border-rose-400/30 bg-rose-400/10 px-4 py-3 text-sm text-rose-200">
+                <p className="border border-rose-400/30 bg-rose-400/10 px-4 py-3 text-sm text-rose-100">
                   {formError}
                 </p>
               ) : null}
@@ -442,125 +542,90 @@ function App() {
               <button
                 type="submit"
                 disabled={isLoading}
-                className="rounded-xl bg-sky-400 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-sky-700 disabled:text-slate-300"
+                className="bg-emerald-300 px-4 py-3 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:bg-emerald-900 disabled:text-stone-300"
               >
-                {isLoading ? 'Searching...' : 'Search trip'}
+                {isLoading ? 'Planning...' : 'Plan multi-city trip'}
               </button>
             </form>
           </div>
         </section>
 
-        <section className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
-          <article className="rounded-3xl border border-white/10 bg-slate-950/55 p-6 shadow-xl shadow-slate-950/30 backdrop-blur">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <div>
-                <h2 className="text-xl font-semibold text-white">Weather</h2>
-                <p className="text-sm text-slate-400">Based on the departure date.</p>
-              </div>
-              {results?.weather ? (
-                <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-xs font-medium text-emerald-200">
-                  {results.weather.date_used}
-                </span>
-              ) : null}
-            </div>
-
-            {sectionErrors.weather ? (
-              <p className="rounded-2xl border border-rose-400/30 bg-rose-400/10 px-4 py-3 text-sm text-rose-200">
-                {sectionErrors.weather}
-              </p>
-            ) : null}
-
-            {results?.weather ? (
-              <div className="grid gap-3 sm:grid-cols-3">
-                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                  <p className="text-sm text-slate-400">High</p>
-                  <p className="mt-2 text-2xl font-semibold text-white">
-                    {formatWeatherNumber(results.weather.max_temp_c, ' C')}
+        <section className="grid gap-6 lg:grid-cols-[0.85fr_1.15fr]">
+          <aside className="grid content-start gap-6">
+            <article className="border border-white/10 bg-black/20 p-5">
+              <h2 className="text-lg font-semibold text-white">City Weather</h2>
+              <div className="mt-4 grid gap-3">
+                {resultCities.length ? (
+                  resultCities.map((city) => (
+                    <div key={`${city.city}-weather`} className="border border-white/10 bg-white/5 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="font-semibold text-white">{city.city}</p>
+                          <p className="text-sm text-stone-400">{city.checkin_date}</p>
+                        </div>
+                        <span className="border border-emerald-300/30 bg-emerald-300/10 px-2 py-1 text-xs text-emerald-100">
+                          {city.days} days
+                        </span>
+                      </div>
+                      <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
+                        <p className="border border-white/10 bg-black/20 p-2">
+                          High
+                          <span className="mt-1 block font-semibold text-white">
+                            {formatWeatherNumber(city.weather?.max_temp_c ?? null, ' C')}
+                          </span>
+                        </p>
+                        <p className="border border-white/10 bg-black/20 p-2">
+                          Low
+                          <span className="mt-1 block font-semibold text-white">
+                            {formatWeatherNumber(city.weather?.min_temp_c ?? null, ' C')}
+                          </span>
+                        </p>
+                        <p className="border border-white/10 bg-black/20 p-2">
+                          Rain
+                          <span className="mt-1 block font-semibold text-white">
+                            {formatWeatherNumber(city.weather?.precipitation_mm ?? null, ' mm')}
+                          </span>
+                        </p>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="border border-dashed border-white/10 bg-white/5 px-4 py-8 text-sm text-stone-400">
+                    Search a trip to load city weather here.
                   </p>
-                </div>
-                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                  <p className="text-sm text-slate-400">Low</p>
-                  <p className="mt-2 text-2xl font-semibold text-white">
-                    {formatWeatherNumber(results.weather.min_temp_c, ' C')}
-                  </p>
-                </div>
-                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                  <p className="text-sm text-slate-400">Precipitation</p>
-                  <p className="mt-2 text-2xl font-semibold text-white">
-                    {formatWeatherNumber(results.weather.precipitation_mm, ' mm')}
-                  </p>
-                </div>
+                )}
               </div>
-            ) : (
-              <p className="rounded-2xl border border-dashed border-white/10 bg-white/3 px-4 py-8 text-sm text-slate-400">
-                Search a trip to load weather data here.
-              </p>
-            )}
-          </article>
-
-          <div className="grid gap-6">
-            <article className="rounded-3xl border border-white/10 bg-slate-950/55 p-6 shadow-xl shadow-slate-950/30 backdrop-blur">
-              <div className="mb-4 flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-xl font-semibold text-white">AI Plan</h2>
-                  <p className="text-sm text-slate-400">Generated from the `/plan-trip/` response.</p>
-                </div>
-              </div>
-
-              {aiPlan ? (
-                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                  <pre className="whitespace-pre-wrap font-sans text-sm leading-6 text-slate-200">
-                    {aiPlan}
-                  </pre>
-                </div>
-              ) : (
-                <p className="rounded-2xl border border-dashed border-white/10 bg-white/3 px-4 py-8 text-sm text-slate-400">
-                  Search a trip to load the generated plan here.
-                </p>
-              )}
             </article>
 
-            <article className="rounded-3xl border border-white/10 bg-slate-950/55 p-6 shadow-xl shadow-slate-950/30 backdrop-blur">
-              <div className="mb-4 flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-xl font-semibold text-white">Flights</h2>
-                  <p className="text-sm text-slate-400">Returned inside the `/plan-trip/` response.</p>
-                </div>
+            <article className="border border-white/10 bg-black/20 p-5">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-lg font-semibold text-white">Flights</h2>
                 {results ? (
-                  <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-300">
+                  <span className="border border-white/10 bg-white/5 px-2 py-1 text-xs text-stone-300">
                     {results.flights.length} found
                   </span>
                 ) : null}
               </div>
 
-              {sectionErrors.flights ? (
-                <p className="mb-4 rounded-2xl border border-rose-400/30 bg-rose-400/10 px-4 py-3 text-sm text-rose-200">
-                  {sectionErrors.flights}
-                </p>
-              ) : null}
-
-              <div className="grid gap-3">
+              <div className="mt-4 grid gap-3">
                 {results?.flights.length ? (
                   results.flights.map((flight) => (
                     <div
                       key={`${flight.airline}-${flight.flight_number}-${flight.departure_time}`}
-                      className="rounded-2xl border border-white/10 bg-white/5 p-4"
+                      className="border border-white/10 bg-white/5 p-4"
                     >
-                      <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="flex items-start justify-between gap-3">
                         <div>
-                          <p className="text-lg font-semibold text-white">
+                          <p className="font-semibold text-white">
                             {flight.airline} {flight.flight_number}
                           </p>
-                          <p className="text-sm uppercase tracking-wide text-sky-200">
+                          <p className="text-sm uppercase tracking-wide text-emerald-100">
                             {flight.origin} to {flight.destination}
                           </p>
                         </div>
-                        <div className="text-right">
-                          <p className="text-lg font-semibold text-white">${flight.price}</p>
-                          <p className="text-sm text-slate-400">{flight.type}</p>
-                        </div>
+                        <p className="font-semibold text-white">${flight.price}</p>
                       </div>
-                      <div className="mt-4 grid gap-3 text-sm text-slate-300 sm:grid-cols-3">
+                      <div className="mt-3 grid gap-2 text-sm text-stone-300">
                         <p>Depart: {formatTimestamp(flight.departure_time)}</p>
                         <p>Arrive: {formatTimestamp(flight.arrival_time)}</p>
                         <p>Duration: {formatFlightDuration(flight.duration_minutes)}</p>
@@ -568,137 +633,118 @@ function App() {
                     </div>
                   ))
                 ) : (
-                  <p className="rounded-2xl border border-dashed border-white/10 bg-white/3 px-4 py-8 text-sm text-slate-400">
-                    {results
-                      ? 'No flights returned for this search.'
-                      : 'Search a trip to load flight options here.'}
+                  <p className="border border-dashed border-white/10 bg-white/5 px-4 py-8 text-sm text-stone-400">
+                    Add airport codes to city stops to load flight segments.
                   </p>
                 )}
               </div>
             </article>
+          </aside>
 
-            <article className="rounded-3xl border border-white/10 bg-slate-950/55 p-6 shadow-xl shadow-slate-950/30 backdrop-blur">
-              <div className="mb-4 flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-xl font-semibold text-white">Activities</h2>
-                  <p className="text-sm text-slate-400">Returned inside the `/plan-trip/` response.</p>
-                </div>
+          <section className="grid gap-6">
+            <article className="border border-white/10 bg-black/20 p-5">
+              <h2 className="text-lg font-semibold text-white">AI Plan</h2>
+              {aiPlan ? (
+                <pre className="mt-4 whitespace-pre-wrap border border-white/10 bg-white/5 p-4 font-sans text-sm leading-6 text-stone-200">
+                  {aiPlan}
+                </pre>
+              ) : (
+                <p className="mt-4 border border-dashed border-white/10 bg-white/5 px-4 py-8 text-sm text-stone-400">
+                  Search a trip to load the generated plan here.
+                </p>
+              )}
+            </article>
+
+            <article className="border border-white/10 bg-black/20 p-5">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-lg font-semibold text-white">City Details</h2>
                 {results ? (
-                  <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-300">
-                    {results.activities.length} found
+                  <span className="border border-white/10 bg-white/5 px-2 py-1 text-xs text-stone-300">
+                    {resultCities.length} cities
                   </span>
                 ) : null}
               </div>
 
-              {sectionErrors.activities ? (
-                <p className="mb-4 rounded-2xl border border-rose-400/30 bg-rose-400/10 px-4 py-3 text-sm text-rose-200">
-                  {sectionErrors.activities}
-                </p>
-              ) : null}
-
-              <div className="grid gap-3 md:grid-cols-2">
-                {results?.activities.length ? (
-                  results.activities.map((activity, index) => (
-                    <div
-                      key={`${activity.name ?? 'activity'}-${activity.type ?? 'unknown'}-${index}`}
-                      className="rounded-2xl border border-white/10 bg-white/5 p-4"
-                    >
-                      <div className="flex items-start justify-between gap-3">
+              <div className="mt-4 grid gap-4">
+                {resultCities.length ? (
+                  resultCities.map((city) => (
+                    <section key={`${city.order}-${city.city}`} className="border border-white/10 bg-white/4 p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
-                          <p className="text-lg font-semibold text-white">
-                            {activity.name ?? 'Unnamed activity'}
+                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-100">
+                            Stop {city.order}
                           </p>
-                          <p className="text-sm text-sky-200">
-                            {activity.type ?? 'Activity'}
+                          <h3 className="mt-1 text-xl font-semibold text-white">
+                            {city.airport ? `${city.city} (${city.airport})` : city.city}
+                          </h3>
+                          <p className="mt-1 text-sm text-stone-400">
+                            {city.checkin_date} to {city.checkout_date} - {city.days} days
                           </p>
                         </div>
-                        <p className="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-xs text-slate-300">
-                          {activity.duration_minutes} min
-                        </p>
+                        <div className="grid grid-cols-2 gap-2 text-sm text-stone-300">
+                          <span className="border border-white/10 bg-black/20 px-3 py-2">
+                            {city.hotels.length} hotels
+                          </span>
+                          <span className="border border-white/10 bg-black/20 px-3 py-2">
+                            {city.activities.length} activities
+                          </span>
+                        </div>
                       </div>
-                      <div className="mt-4 space-y-2 text-sm text-slate-300">
-                        <p>{activity.description ?? 'No description available.'}</p>
-                        <p>
-                          Coordinates:{' '}
-                          {activity.latitude !== null && activity.longitude !== null
-                            ? `${activity.latitude.toFixed(3)}, ${activity.longitude.toFixed(3)}`
-                            : 'N/A'}
-                        </p>
+
+                      <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                        <div>
+                          <h4 className="text-sm font-semibold text-white">Hotels</h4>
+                          <div className="mt-2 grid gap-2">
+                            {city.hotels.slice(0, 4).map((hotel) => (
+                              <div key={`${city.city}-${hotel.name}`} className="border border-white/10 bg-black/20 p-3">
+                                <div className="flex items-start justify-between gap-3">
+                                  <p className="font-semibold text-white">{hotel.name}</p>
+                                  <p className="text-emerald-100">${hotel.price_per_night.toFixed(0)}</p>
+                                </div>
+                                <p className="mt-1 text-sm text-stone-400">
+                                  {hotel.rating ? `${hotel.rating}/5 rating` : 'No rating available'}
+                                </p>
+                              </div>
+                            ))}
+                            {!city.hotels.length ? (
+                              <p className="border border-dashed border-white/10 p-3 text-sm text-stone-400">
+                                No hotels returned for this city.
+                              </p>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        <div>
+                          <h4 className="text-sm font-semibold text-white">Activities</h4>
+                          <div className="mt-2 grid gap-2">
+                            {city.activities.slice(0, 4).map((activity, index) => (
+                              <div key={`${city.city}-${activity.name ?? 'activity'}-${index}`} className="border border-white/10 bg-black/20 p-3">
+                                <p className="font-semibold text-white">
+                                  {activity.name ?? 'Unnamed activity'}
+                                </p>
+                                <p className="mt-1 text-sm text-stone-400">
+                                  {activity.type ?? 'Activity'} - {activity.duration_minutes} min
+                                </p>
+                              </div>
+                            ))}
+                            {!city.activities.length ? (
+                              <p className="border border-dashed border-white/10 p-3 text-sm text-stone-400">
+                                No activities returned for this city.
+                              </p>
+                            ) : null}
+                          </div>
+                        </div>
                       </div>
-                    </div>
+                    </section>
                   ))
                 ) : (
-                  <p className="rounded-2xl border border-dashed border-white/10 bg-white/3 px-4 py-8 text-sm text-slate-400 md:col-span-2">
-                    {results
-                      ? form.activityFilters.length
-                        ? 'No activities returned for the selected filters.'
-                        : 'Pick one or more activity filters to load activities.'
-                      : 'Search a trip to load activities here.'}
+                  <p className="border border-dashed border-white/10 bg-white/5 px-4 py-8 text-sm text-stone-400">
+                    Search a trip to load city-by-city details here.
                   </p>
                 )}
               </div>
             </article>
-
-            <article className="rounded-3xl border border-white/10 bg-slate-950/55 p-6 shadow-xl shadow-slate-950/30 backdrop-blur">
-              <div className="mb-4 flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-xl font-semibold text-white">Hotels</h2>
-                  <p className="text-sm text-slate-400">Returned inside the `/plan-trip/` response.</p>
-                </div>
-                {results ? (
-                  <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-300">
-                    {results.hotels.length} found
-                  </span>
-                ) : null}
-              </div>
-
-              {sectionErrors.hotels ? (
-                <p className="mb-4 rounded-2xl border border-rose-400/30 bg-rose-400/10 px-4 py-3 text-sm text-rose-200">
-                  {sectionErrors.hotels}
-                </p>
-              ) : null}
-
-              <div className="grid gap-3 md:grid-cols-2">
-                {results?.hotels.length ? (
-                  results.hotels.map((hotel) => (
-                    <div
-                      key={`${hotel.name}-${hotel.checkin_date}-${hotel.checkout_date}`}
-                      className="rounded-2xl border border-white/10 bg-white/5 p-4"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-lg font-semibold text-white">{hotel.name}</p>
-                          <p className="text-sm text-slate-400">
-                            {hotel.rating ? `${hotel.rating}/5 rating` : 'No rating available'}
-                          </p>
-                        </div>
-                        <p className="text-lg font-semibold text-emerald-200">
-                          ${hotel.price_per_night.toFixed(0)}
-                        </p>
-                      </div>
-                      <div className="mt-4 space-y-2 text-sm text-slate-300">
-                        <p>
-                          Stay: {hotel.checkin_date} to {hotel.checkout_date}
-                        </p>
-                        <p>
-                          Coordinates:{' '}
-                          {hotel.latitude !== null && hotel.longitude !== null
-                            ? `${hotel.latitude.toFixed(3)}, ${hotel.longitude.toFixed(3)}`
-                            : 'N/A'}
-                        </p>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <p className="rounded-2xl border border-dashed border-white/10 bg-white/3 px-4 py-8 text-sm text-slate-400 md:col-span-2">
-                    {results
-                      ? 'No hotels returned for this search.'
-                      : 'Search a trip to load hotel options here.'}
-                  </p>
-                )}
-              </div>
-            </article>
-          </div>
+          </section>
         </section>
       </div>
     </main>
