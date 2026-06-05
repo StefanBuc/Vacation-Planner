@@ -101,15 +101,40 @@ Create `backend/.env` with:
 SERPAPI_KEY=
 GEOAPIFY_KEY=
 GEMINI_KEY=
+ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
 
-Optional:
+For local non-Docker testing, you can also allow any frontend origin:
 
 ```env
 ALLOWED_ORIGINS=*
 ```
 
 ## Running The App
+
+### Docker Compose
+
+From the project root, make sure Docker Desktop is running, then start both services:
+
+```powershell
+docker compose up --build
+```
+
+Open:
+
+- Frontend: `http://localhost:5173`
+- Backend health check: `http://localhost:8000/health`
+- Backend docs: `http://localhost:8000/docs`
+
+The Docker setup runs the backend with Uvicorn reload and the frontend with Vite. Local changes in `backend` and `frontend` are mounted into the containers for development.
+
+To stop the app:
+
+```powershell
+docker compose down
+```
+
+### Local Development
 
 Backend:
 
